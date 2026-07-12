@@ -13,7 +13,7 @@ subtraction. Create a portal with your hands and make things disappear!
 
 ## 🚀 Live Demo
 
-👉 [invisibility-portal.vercel.app](https://invisibility-portal.vercel.app)
+👉 [https://github.com/im-alisher/invisibility-portal]
 
 ## 🛠️ Tech Stack
 
