@@ -1,0 +1,514 @@
+<!-- <!DOCTYPE html>
+<html>
+<head>
+  <title>Invisibility Mode</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; display: flex; flex-direction: column; align-items: center; font-family: monospace; }
+    h2 { color: #ffff00; margin: 10px; font-size: 22px; letter-spacing: 2px; }
+    #status { color: #00ffcc; font-size: 13px; margin-bottom: 8px; }
+    #hint { color: #aaa; font-size: 12px; margin-bottom: 8px; }
+    video { display: none; }
+    canvas { border: 2px solid #333; }
+  </style>
+</head>
+<body>
+  <h2>👁️ INVISIBILITY MODE</h2>
+  <p id="status">Loading...</p>
+  <p id="hint">Pinch both hands to create a portal!</p>
+  <video id="video" autoplay playsinline></video>
+  <canvas id="canvas"></canvas>
+  <canvas id="bgCanvas" style="display:none"></canvas>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const bgCanvas = document.getElementById('bgCanvas');
+    const ctx = canvas.getContext('2d');
+    const bgCtx = bgCanvas.getContext('2d');
+    const statusEl = document.getElementById('status');
+
+    const W = 640, H = 480;
+    canvas.width = bgCanvas.width = W;
+    canvas.height = bgCanvas.height = H;
+
+    // Store background frames (captured when no hands pinching)
+    let bgFrames = [];
+    const MAX_BG_FRAMES = 30;
+    let bgReady = false;
+    let frameCount = 0;
+
+    // Pinch state
+    let pinch1 = null, pinch2 = null;
+    let portalOpacity = 0;
+
+    function getPinchPoint(landmarks) {
+      // Index tip (8) and thumb tip (4)
+      const thumb = landmarks[4];
+      const index = landmarks[8];
+      const dist = Math.hypot(thumb.x - index.x, thumb.y - index.y);
+      const isPinching = dist < 0.06;
+      const midX = (1 - (thumb.x + index.x) / 2) * W;
+      const midY = ((thumb.y + index.y) / 2) * H;
+      return { isPinching, x: midX, y: midY, dist };
+    }
+
+    function drawNeonRect(x1, y1, x2, y2, color, glow) {
+      const minX = Math.min(x1, x2);
+      const minY = Math.min(y1, y2);
+      const w = Math.abs(x2 - x1);
+      const h = Math.abs(y2 - y1);
+
+      // Glow layers
+      for (let i = 6; i >= 1; i--) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = i * 2;
+        ctx.globalAlpha = 0.06 * glow;
+        ctx.strokeRect(minX, minY, w, h);
+      }
+      // Sharp border
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.globalAlpha = glow;
+      ctx.strokeRect(minX, minY, w, h);
+
+      ctx.globalAlpha = 1;
+    }
+
+    function drawPinchDot(x, y, isPinching) {
+      const color = isPinching ? '#ffff00' : '#ffffff';
+      const radius = isPinching ? 10 : 6;
+
+      for (let i = 3; i >= 1; i--) {
+        ctx.beginPath();
+        ctx.arc(x, y, radius + i * 3, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.1;
+        ctx.fill();
+      }
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 1;
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(x, y, radius / 2, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.globalAlpha = 1;
+      ctx.fill();
+    }
+
+    const hands = new Hands({
+      locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+    });
+
+    hands.setOptions({
+      maxNumHands: 2,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.7,
+      minTrackingConfidence: 0.5
+    });
+
+    hands.onResults((results) => {
+      frameCount++;
+
+      // --- Draw current frame (flipped) ---
+      ctx.save();
+      ctx.scale(-1, 1);
+      ctx.translate(-W, 0);
+      ctx.drawImage(results.image, 0, 0, W, H);
+      ctx.restore();
+
+      // --- Capture background frames when no hands detected ---
+      if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+        if (bgFrames.length < MAX_BG_FRAMES) {
+          bgCtx.save();
+          bgCtx.scale(-1, 1);
+          bgCtx.translate(-W, 0);
+          bgCtx.drawImage(results.image, 0, 0, W, H);
+          bgCtx.restore();
+
+          bgFrames.push(bgCtx.getImageData(0, 0, W, H));
+          if (bgFrames.length >= 10) bgReady = true;
+        }
+        pinch1 = null;
+        pinch2 = null;
+        portalOpacity = Math.max(0, portalOpacity - 0.05);
+        statusEl.textContent = '📸 Background captured! Now show both hands';
+        return;
+      }
+
+      // --- Detect pinch for each hand ---
+      pinch1 = null;
+      pinch2 = null;
+
+      if (results.multiHandLandmarks.length >= 1) {
+        pinch1 = getPinchPoint(results.multiHandLandmarks[0]);
+      }
+      if (results.multiHandLandmarks.length >= 2) {
+        pinch2 = getPinchPoint(results.multiHandLandmarks[1]);
+      }
+
+      const bothPinching = pinch1?.isPinching && pinch2?.isPinching;
+
+      // --- Portal effect ---
+      if (bothPinching && bgReady) {
+        portalOpacity = Math.min(1, portalOpacity + 0.08);
+
+        const x1 = pinch1.x, y1 = pinch1.y;
+        const x2 = pinch2.x, y2 = pinch2.y;
+
+        const minX = Math.min(x1, x2);
+        const minY = Math.min(y1, y2);
+        const rectW = Math.abs(x2 - x1);
+        const rectH = Math.abs(y2 - y1);
+
+        if (rectW > 20 && rectH > 20) {
+          // Get background image data
+          const latestBg = bgFrames[bgFrames.length - 1];
+
+          // Draw background inside the portal rectangle
+          ctx.save();
+          ctx.globalAlpha = portalOpacity;
+
+          // Create temp canvas for bg region
+          const tempCanvas = document.createElement('canvas');
+          tempCanvas.width = W;
+          tempCanvas.height = H;
+          const tempCtx = tempCanvas.getContext('2d');
+          tempCtx.putImageData(latestBg, 0, 0);
+
+          // Clip to rectangle and draw bg
+          ctx.beginPath();
+          ctx.rect(minX, minY, rectW, rectH);
+          ctx.clip();
+          ctx.drawImage(tempCanvas, 0, 0);
+          ctx.restore();
+
+          // Draw portal border
+          drawNeonRect(x1, y1, x2, y2, '#ffff00', portalOpacity);
+
+          // Portal label
+          ctx.globalAlpha = portalOpacity;
+          ctx.fillStyle = '#ffff00';
+          ctx.font = 'bold 13px monospace';
+          ctx.fillText('◄ PINCH ► CLOSE PORTAL', minX + 5, minY - 8);
+          ctx.globalAlpha = 1;
+        }
+
+        statusEl.textContent = `✅ PORTAL OPEN | Size: ${Math.round(Math.abs(pinch2.x - pinch1.x))}x${Math.round(Math.abs(pinch2.y - pinch1.y))}`;
+      } else {
+        portalOpacity = Math.max(0, portalOpacity - 0.05);
+        if (bgReady) {
+          statusEl.textContent = pinch1?.isPinching || pinch2?.isPinching
+            ? '👌 One hand pinching... pinch both to open portal!'
+            : '🖐️ Pinch index + thumb on BOTH hands to open portal!';
+        }
+      }
+
+      // --- Draw pinch dots ---
+      if (pinch1) drawPinchDot(pinch1.x, pinch1.y, pinch1.isPinching);
+      if (pinch2) drawPinchDot(pinch2.x, pinch2.y, pinch2.isPinching);
+
+      // --- HUD ---
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#ffff00';
+      ctx.font = 'bold 13px monospace';
+      const portalPct = Math.round(portalOpacity * 100);
+      ctx.fillText(`PORTAL ${portalPct}%`, 10, H - 35);
+      ctx.fillStyle = '#00ffcc';
+      ctx.fillText(`HANDS ${results.multiHandLandmarks.length}`, 10, H - 18);
+      ctx.fillStyle = '#ffffff';
+      const pinchVal = pinch1 ? pinch1.dist.toFixed(2) : '---';
+      ctx.fillText(`PINCH ${pinchVal}`, 120, H - 18);
+    });
+
+    const camera = new Camera(video, {
+      onFrame: async () => { await hands.send({ image: video }); },
+      width: W, height: H
+    });
+
+    camera.start()
+      .then(() => { statusEl.textContent = '📸 Step back from camera to capture background first!'; })
+      .catch(err => { statusEl.textContent = '❌ Camera error: ' + err.message; });
+  </script>
+</body>
+</html> -->
+
+
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Invisibility Mode</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; display: flex; flex-direction: column; align-items: center; font-family: monospace; color: white; }
+    h2 { color: #ffff00; margin: 10px; font-size: 20px; letter-spacing: 3px; }
+    #status { color: #00ffcc; font-size: 13px; margin: 6px; text-align: center; }
+    video { display: none; }
+    canvas { border: 2px solid #444; display: block; }
+    #debugInfo { color: #888; font-size: 11px; margin: 5px; }
+  </style>
+</head>
+<body>
+  <h2>👁️ INVISIBILITY PORTAL</h2>
+  <p id="status">Initializing camera...</p>
+  <video id="video" autoplay playsinline></video>
+  <canvas id="canvas"></canvas>
+  <p id="debugInfo">debug: waiting...</p>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('status');
+    const debugEl = document.getElementById('debugInfo');
+
+    const W = 640, H = 480;
+    canvas.width = W;
+    canvas.height = H;
+
+    // Background storage
+    let bgImageData = null;
+    let bgCaptured = false;
+    let bgFrameCount = 0;
+    const BG_FRAMES_NEEDED = 20;
+
+    // Off-screen canvas for bg
+    const offCanvas = document.createElement('canvas');
+    offCanvas.width = W; offCanvas.height = H;
+    const offCtx = offCanvas.getContext('2d');
+
+    // Portal state
+    let portalVisible = false;
+    let portalAlpha = 0;
+
+    // ---- Helper: flip and draw frame ----
+    function drawFlippedFrame(src) {
+      ctx.save();
+      ctx.translate(W, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(src, 0, 0, W, H);
+      ctx.restore();
+    }
+
+    function captureBackground(src) {
+      offCtx.save();
+      offCtx.translate(W, 0);
+      offCtx.scale(-1, 1);
+      offCtx.drawImage(src, 0, 0, W, H);
+      offCtx.restore();
+      bgImageData = offCtx.getImageData(0, 0, W, H);
+      bgCaptured = true;
+    }
+
+    // ---- Pinch detection ----
+    // Returns screen coords of pinch midpoint, and whether pinching
+    function getPinch(lms) {
+      const t = lms[4];  // thumb tip
+      const i = lms[8];  // index tip
+      // distance in normalized coords
+      const d = Math.hypot(t.x - i.x, t.y - i.y);
+      // midpoint in screen coords (flipped x)
+      const mx = (1 - (t.x + i.x) / 2) * W;
+      const my = ((t.y + i.y) / 2) * H;
+      return {
+        pinching: d < 0.09,  // generous threshold
+        x: mx,
+        y: my,
+        dist: d
+      };
+    }
+
+    // ---- Draw glowing rectangle ----
+    function drawGlowRect(x1, y1, x2, y2, alpha) {
+      const lx = Math.min(x1, x2);
+      const ly = Math.min(y1, y2);
+      const rw = Math.abs(x2 - x1);
+      const rh = Math.abs(y2 - y1);
+
+      // Paste background inside rect
+      if (bgCaptured) {
+        const tempC = document.createElement('canvas');
+        tempC.width = W; tempC.height = H;
+        const tempCtx = tempC.getContext('2d');
+        tempCtx.putImageData(bgImageData, 0, 0);
+
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.beginPath();
+        ctx.rect(lx, ly, rw, rh);
+        ctx.clip();
+        ctx.drawImage(tempC, 0, 0);
+        ctx.restore();
+      }
+
+      // Glowing border
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      for (let g = 8; g >= 1; g--) {
+        ctx.strokeStyle = '#ffff00';
+        ctx.lineWidth = g * 2.5;
+        ctx.globalAlpha = alpha * 0.05;
+        ctx.strokeRect(lx, ly, rw, rh);
+      }
+      ctx.strokeStyle = '#ffff00';
+      ctx.lineWidth = 2;
+      ctx.globalAlpha = alpha;
+      ctx.strokeRect(lx, ly, rw, rh);
+
+      // Corner accents
+      const cSize = 15;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 3;
+      const corners = [
+        [lx, ly, lx+cSize, ly, lx, ly+cSize],
+        [lx+rw, ly, lx+rw-cSize, ly, lx+rw, ly+cSize],
+        [lx, ly+rh, lx+cSize, ly+rh, lx, ly+rh-cSize],
+        [lx+rw, ly+rh, lx+rw-cSize, ly+rh, lx+rw, ly+rh-cSize],
+      ];
+      corners.forEach(([x, y, x2, y2, x3, y3]) => {
+        ctx.beginPath();
+        ctx.moveTo(x2, y2);
+        ctx.lineTo(x, y);
+        ctx.lineTo(x3, y3);
+        ctx.stroke();
+      });
+
+      // Label
+      ctx.fillStyle = '#ffff00';
+      ctx.font = 'bold 12px monospace';
+      ctx.globalAlpha = alpha;
+      ctx.fillText('◄ PINCH ► CLOSE PORTAL', lx + 6, ly - 6);
+      ctx.restore();
+    }
+
+    // ---- Draw pinch indicator dot ----
+    function drawDot(x, y, pinching) {
+      const color = pinching ? '#ffff00' : '#00ffcc';
+      const r = pinching ? 12 : 7;
+      ctx.save();
+      for (let i = 3; i >= 1; i--) {
+        ctx.beginPath();
+        ctx.arc(x, y, r + i*4, 0, Math.PI*2);
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.07;
+        ctx.fill();
+      }
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI*2);
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 1;
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(x, y, r/2.5, 0, Math.PI*2);
+      ctx.fillStyle = '#fff';
+      ctx.globalAlpha = 1;
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // ---- MediaPipe Hands ----
+    const handsModel = new Hands({
+      locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+    });
+
+    handsModel.setOptions({
+      maxNumHands: 2,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.5
+    });
+
+    handsModel.onResults((results) => {
+      const numHands = results.multiHandLandmarks ? results.multiHandLandmarks.length : 0;
+
+      // Step 1: Draw current frame
+      drawFlippedFrame(results.image);
+
+      // Step 2: Capture background when no hands
+      if (numHands === 0) {
+        bgFrameCount++;
+        if (bgFrameCount <= BG_FRAMES_NEEDED) {
+          captureBackground(results.image);
+          const pct = Math.round((bgFrameCount / BG_FRAMES_NEEDED) * 100);
+          statusEl.textContent = `📸 Capturing background... ${pct}%`;
+        } else {
+          statusEl.textContent = '✅ Background ready! Show both hands & PINCH index+thumb';
+        }
+        debugEl.textContent = `hands: 0 | bg frames: ${bgFrameCount}`;
+        return;
+      }
+
+      // Step 3: Detect pinches
+      let p1 = null, p2 = null;
+      if (numHands >= 1) p1 = getPinch(results.multiHandLandmarks[0]);
+      if (numHands >= 2) p2 = getPinch(results.multiHandLandmarks[1]);
+
+      debugEl.textContent = `hands: ${numHands} | ` +
+        `p1: ${p1 ? p1.dist.toFixed(3) + (p1.pinching?' 👌':'') : 'n/a'} | ` +
+        `p2: ${p2 ? p2.dist.toFixed(3) + (p2.pinching?' 👌':'') : 'n/a'}`;
+
+      // Step 4: Portal logic
+      const bothPinching = p1?.pinching && p2?.pinching;
+
+      if (bothPinching) {
+        portalAlpha = Math.min(1, portalAlpha + 0.1);
+      } else {
+        portalAlpha = Math.max(0, portalAlpha - 0.08);
+      }
+
+      // Step 5: Draw portal
+      if (portalAlpha > 0.01 && p1 && p2) {
+        drawGlowRect(p1.x, p1.y, p2.x, p2.y, portalAlpha);
+      }
+
+      // Step 6: Draw pinch dots
+      if (p1) drawDot(p1.x, p1.y, p1.pinching);
+      if (p2) drawDot(p2.x, p2.y, p2.pinching);
+
+      // Step 7: Status
+      if (!bgCaptured) {
+        statusEl.textContent = '⚠️ Remove hands first to capture background!';
+      } else if (bothPinching) {
+        statusEl.textContent = `🟡 PORTAL OPEN! Size: ${Math.round(Math.abs(p2.x-p1.x))}×${Math.round(Math.abs(p2.y-p1.y))}px`;
+      } else if (numHands === 1) {
+        statusEl.textContent = '🖐️ Show BOTH hands, then pinch index+thumb on each';
+      } else {
+        statusEl.textContent = `🖐️ Both hands detected! Now PINCH index+thumb on both`;
+      }
+
+      // HUD
+      ctx.save();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#ffff00';
+      ctx.font = 'bold 13px monospace';
+      ctx.fillText(`PORTAL ${Math.round(portalAlpha*100)}%`, 10, H-35);
+      ctx.fillStyle = '#00ffcc';
+      ctx.fillText(`HANDS ${numHands}`, 10, H-18);
+      ctx.restore();
+    });
+
+    // ---- Start Camera ----
+    const camera = new Camera(video, {
+      onFrame: async () => { await handsModel.send({ image: video }); },
+      width: W, height: H
+    });
+
+    camera.start()
+      .then(() => {
+        statusEl.textContent = '📸 Step AWAY from camera for 3 sec to capture background!';
+      })
+      .catch(err => {
+        statusEl.textContent = '❌ Camera error: ' + err.message;
+      });
+  </script>
+</body>
+</html>
