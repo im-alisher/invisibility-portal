@@ -13,7 +13,7 @@ subtraction. Create a portal with your hands and make things disappear!
 
 ## 🚀 Live Demo
 
-👉 [https://github.com/im-alisher/invisibility-portal]
+👉 https://im-alisher.github.io/invisibility-portal/
 
 ## 🛠️ Tech Stack
 
