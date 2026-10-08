@@ -1,7 +1,7 @@
 # 👁️ Invisibility Portal
 
 Real-time invisibility effect using hand gesture detection and background 
-subtraction. Create a portal with your hands and make things disappear!
+subtraction. Create a portal with your hands and make things disappear..!
 
 ## ✨ Features
 
